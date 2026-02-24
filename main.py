@@ -1,265 +1,286 @@
-from enum import Enum
+from enum import Enum, StrEnum
 
 
-
-class TokenType(Enum):
-    NUMBER = 1
-    WORD = 2
-    ADD = 3
-    UNKNOWN = 4
-    COMMENT_LINE = 5
-    PRINT = 6
-    DUP = 7
-    PRINT_STACK = 8
-    START_DEFINE = 9
-    END_DEFINE = 10
-    DEFINITION = 11
+class TokenType(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    NUMBER = "NUMBER"
+    COMMENT = "COMMENT"
+    DUP = "DUP"
+    PRINT_STACK = "PRINT_STACK"
+    ADD = "ADD"
+    MINUS = "MINUS"
 
 
-class TokenStatus(Enum):
-    INVALID = 1
-    VALID = 2
-
-class TokenModifier(Enum):
-    NORMAL = 1
-    DEFINE = 2
-
-class Token:
+# ========================================= TOKEN DEFINITION =========================================
+class ForthToken:
     @staticmethod
-    def type_determination(value, modifier: TokenModifier) -> TokenType:
-        
-        if value == ";":
-            return TokenType.END_DEFINE, TokenModifier.NORMAL
-        
-        if modifier == TokenModifier.DEFINE:
-            return TokenType.DEFINITION, TokenModifier.DEFINE
-
-        match value:
-            case v if v[0] == "\\":
-                return TokenType.COMMENT_LINE, TokenModifier.NORMAL
-
-            case v if (v.startswith("-") and v[1:].isdigit()) or v.isdigit():
-                return TokenType.NUMBER, TokenModifier.NORMAL
-
-            case "+":
-                return TokenType.ADD, TokenModifier.NORMAL
-
-            case ".":
-                return TokenType.PRINT, TokenModifier.NORMAL
-
-            case ".s":
-                return TokenType.PRINT_STACK, TokenModifier.NORMAL
-
-            case v if v.lower() == "dup":
-                return TokenType.DUP, TokenModifier.NORMAL
-
-            case ":":
-                return TokenType.START_DEFINE, TokenModifier.DEFINE
-
-            case ";":
-                return TokenType.END_DEFINE, TokenModifier.NORMAL
-            
-            case v if not v.isdigit():
-                return TokenType.WORD, TokenModifier.NORMAL
-
-            case _:
-                return TokenType.UNKNOWN, TokenModifier.NORMAL
+    def is_number(text: str, _):
+        if (text.startswith("-") and text[1:].isdigit()) or text.isdigit():
+            return True
 
     @staticmethod
-    def cast_value(value, type: TokenType):
+    def is_word(text: str, word: str):
+        return text.capitalize() == word.capitalize()
 
-        match type:
-            case TokenType.NUMBER:
-                return int(value)
-            case _:
-                return value
+    TOKEN_TYPE_DET = [
+        (is_number, None, TokenType.NUMBER),
+        (is_word, "DUP", TokenType.DUP),
+        (is_word, ".S", TokenType.PRINT_STACK),
+        (is_word, "+", TokenType.ADD),
+        (is_word, "-", TokenType.MINUS),
+    ]
 
-    @staticmethod
-    def start_creation(line, start_at):
+    def __init__(self):
+        self.line_number = None
+        self.start_pos = None
+        self.end_pos = None
+        self.text = None
 
-        new_token = Token()
-        new_token.status = TokenStatus.INVALID
+    def start(self, line_number: int, start_pos: int, token_type: TokenType = TokenType.UNKNOWN):
+        self.line_number = line_number
+        self.start_pos = start_pos
+        self.token_type = token_type
 
-        new_token.line = line
-        new_token.start_at = start_at
-        new_token.end_at = None
-        new_token.value = None
-        new_token.next_modifier = None
+    def end(self, end_pos, text):
+        self.end_pos = end_pos
+        self.text = text
 
-        return new_token
+        # If the type not set during the start we need to determine the type
+        if self.token_type == TokenType.UNKNOWN:
+            for check_rule, rule_value, token_type in ForthToken.TOKEN_TYPE_DET:
+                if check_rule(text, rule_value):
+                    self.token_type = token_type
+                    break
 
-    def complete_creation(self, end_at, value, modifier):
-        self.end_at = end_at
-        self.modifier = modifier
+    def start_end(self):
+        pass
 
-        self.type, self.next_modifier = Token.type_determination(value, modifier)
+    def is_pending(self):
+        """Is the token pending? I mean started but not completed yet"""
 
-        self.value = Token.cast_value(value, self.type)
-
-    @staticmethod
-    def create(line: int, start_at: int, end_at: int, value, modifier):
-        new_token = Token()
-
-        new_token.line = line
-        new_token.start_at = start_at
-        new_token.end_at = end_at
-        new_token.modifier = modifier
-
-        new_token.type, new_token.next_modifier = Token.type_determination(value, modifier)
-
-        new_token.value = Token.cast_value(value, new_token.type)
-
-        return new_token
-    
-    @staticmethod
-    def create_execution(value: str):
-        new_token = Token()
-
-        new_token.line = 0
-        new_token.start_at = 0
-        new_token.end_at = 0
-
-        new_token.type, new_token.next_modifier = Token.type_determination(value, TokenModifier.NORMAL)
-
-        new_token.value = Token.cast_value(value, new_token.type)
-
-        return new_token
+        return self.start_pos
 
     def __str__(self):
+        formatted_value = f"{self.text}"
 
-        if self.type == TokenType.WORD:
-            formatted_value = str(self.value)[:40]
-        else:
-            formatted_value = self.value
-
-        return f"line {self.line:>3} {self.start_at:>2}:{self.end_at:>2} {self.type:30} {self.modifier} {self.next_modifier} value : {[formatted_value]}"
+        return f"line {self.line_number:>3} {self.start_pos:>2}:{self.end_pos:>2} type: {self.token_type:10} value : {[formatted_value]}"
 
 
-class Context:
+# =========================================== FORTH PARSER ===========================================
+class ForthParser:
+    @staticmethod
+    def is_generic_char(char: str):
+        return char.isalpha() or char.isdigit() or char == "-" or char == "." or char == "+"
+
+    @staticmethod
+    def is_space(char: str):
+        return char == " "
+
+    @staticmethod
+    def is_eol(char: str):
+        return char == "\n"
+
+    @staticmethod
+    def is_comment(char: str):
+        return char == "\\" or char == "("
+
+    @staticmethod
+    def is_not_eol(char: str):
+        return char != "\n"
+
+    class State(Enum):
+        NORMAL_PARSING = 1
+        WAITING_END_OF_TOKEN = 2
+        WAITING_END_OF_COMMENT = 3
+
+    class TokenEvent(Enum):
+        START_TOKEN = 1
+        PARSING_TOKEN = 2
+        END_TOKEN = 3
+        SKIP_CHAR = 4
+        START_COMMENT = 5
+        PARSING_COMMENT = 6
+        END_COMMENT = 7
+
+    class CharEvent:
+        def __init__(self, line_number, position, character, line_source_code):
+            self.line_number: int = line_number
+            self.position: int = position
+            self.character: str = character
+            self.line_source_code: str = line_source_code
+
+    # Rules to determine the event, ORDER IS VERY IMPORTANT!!!
+    EVENT_RULES = [
+        ((State.WAITING_END_OF_TOKEN, is_space), TokenEvent.END_TOKEN),
+        ((State.WAITING_END_OF_TOKEN, is_eol), TokenEvent.END_TOKEN),
+        ((State.WAITING_END_OF_TOKEN, is_generic_char), TokenEvent.PARSING_TOKEN),
+        ((State.NORMAL_PARSING, is_space), TokenEvent.SKIP_CHAR),
+        ((State.NORMAL_PARSING, is_eol), TokenEvent.SKIP_CHAR),
+        ((State.NORMAL_PARSING, is_comment), TokenEvent.START_COMMENT),
+        ((State.NORMAL_PARSING, is_generic_char), TokenEvent.START_TOKEN),
+        ((State.WAITING_END_OF_COMMENT, is_not_eol), TokenEvent.PARSING_COMMENT),
+        ((State.WAITING_END_OF_COMMENT, is_eol), TokenEvent.END_COMMENT),
+    ]
+
+    STATE_MACHINE = {
+        (State.NORMAL_PARSING, TokenEvent.START_TOKEN): State.WAITING_END_OF_TOKEN,
+        (State.NORMAL_PARSING, TokenEvent.SKIP_CHAR): State.NORMAL_PARSING,
+        (State.WAITING_END_OF_TOKEN, TokenEvent.PARSING_TOKEN): State.WAITING_END_OF_TOKEN,
+        (State.WAITING_END_OF_TOKEN, TokenEvent.END_TOKEN): State.NORMAL_PARSING,
+        (State.NORMAL_PARSING, TokenEvent.START_COMMENT): State.WAITING_END_OF_COMMENT,
+        (State.WAITING_END_OF_COMMENT, TokenEvent.PARSING_COMMENT): State.WAITING_END_OF_COMMENT,
+        (State.WAITING_END_OF_COMMENT, TokenEvent.END_COMMENT): State.NORMAL_PARSING,
+    }
+
     def __init__(self):
-        self.stack = []
+        self.state = self.State.NORMAL_PARSING
+        self.last_event = None
+        self.tokens = []
+        self.user_words = []
 
+    def _handle_token_event(
+        self, token_event: TokenEvent, char_event: CharEvent, token: ForthToken
+    ):
 
-def parse_line(line_number, source_code):
-
-    tokens = []
-
-    token = None
-
-    token_modifier = TokenModifier.NORMAL
-
-    for i, c in enumerate(source_code):
-        try:
-            if c == "\\":
-                token = Token.create(
-                    line=i, start_at=i, end_at=i, value=source_code[i:], modifier=token_modifier
+        match token_event:
+            case self.TokenEvent.START_TOKEN:
+                token.start(
+                    char_event.line_number,
+                    char_event.position,
                 )
-                tokens.append(token)
 
-                token = None
+            case self.TokenEvent.PARSING_TOKEN:
+                return
 
-                break
+            case self.TokenEvent.END_TOKEN:
+                token_text = char_event.line_source_code[token.start_pos : char_event.position]
 
-            if i == 0 and c == "(":
-                break
+                token.end(
+                    end_pos=char_event.position,
+                    text=token_text,
+                )
 
-            match c:
-                case " ":
-                    if token:
-                        token.complete_creation(end_at=i, value=source_code[token.start_at : i], modifier=token_modifier)
-                        token_modifier = token.next_modifier
+            case self.TokenEvent.SKIP_CHAR:
+                return
 
-                        tokens.append(token)
+            case self.TokenEvent.START_COMMENT:
+                token.start(char_event.line_number, char_event.position, TokenType.COMMENT)
 
-                        token = None
+            case self.TokenEvent.PARSING_COMMENT:
+                return
 
-                case "[":
-                    token = Token.create(
-                        line=source_code,
-                        start_at=i,
-                        end_at=i,
-                        value=source_code[token.start_at : i],
-                        token_modifer=token_modifier
-                    )
-                    token_modifier = token.next_modifier
+            case self.TokenEvent.END_COMMENT:
+                token_text = char_event.line_source_code[token.start_pos : char_event.position]
 
-                    tokens.append(token)
+                token.end(
+                    end_pos=char_event.position,
+                    text=token_text,
+                )
 
-                    token = None
+    def filter_rules_for_state(self, state: State):
+        # I think this is really not so much transparent, I get it more trasparent wrapping in a function
+        return [(event[0][1], event[1]) for event in self.EVENT_RULES if event[0][0] == state]
 
-                case _:
-                    if not token:
-                        token = Token.start_creation(line=line_number, start_at=i)
+    def _handle_char_event(
+        self, current_state: State, char_event: CharEvent, current_token: ForthToken
+    ):
 
-        except Exception as e:
-            print(f"Line {line_number} column {i + 1} character `{c}`")
-            raise e
+        event_det_rules = self.filter_rules_for_state(current_state)
 
-    if token:
-        token.complete_creation(end_at=i, value=source_code[token.start_at : len(source_code)], modifier=token_modifier)
-        token_modifier = token.next_modifier
+        for event_det_rule_check, token_event in event_det_rules:
+            if event_det_rule_check(char_event.character):
+                self._handle_token_event(token_event, char_event, current_token)
 
-        tokens.append(token)
+                return token_event
 
-        token = None
+        raise BaseException(
+            f"No rule defined for state {current_state} char '{char_event.character}'"
+        )
 
-    return tokens
+    def _parse_line(self, line_number, line_source_code):
+
+        tokens = []
+
+        current_state: ForthParser.State = ForthParser.State.NORMAL_PARSING
+
+        current_token: ForthToken = ForthToken()
+
+        # For each char in the line
+        for position, char in enumerate(line_source_code):
+            # Wrap info in a dataclass
+            char_event = self.CharEvent(line_number, position, char, line_source_code)
+
+            # Handle the char event
+            token_event = self._handle_char_event(current_state, char_event, current_token)
+
+            # A new token has been completed?
+            if token_event == self.TokenEvent.END_TOKEN:
+                tokens.append(current_token)
+
+                current_token = ForthToken()
+
+            # New state determination using the current state and the token event happened
+            new_state = self.STATE_MACHINE[(current_state, token_event)]
+
+            print(
+                f"Current state {current_state} char '{char_event.character}' token event {token_event} next state {new_state}"
+            )
+
+            current_state = new_state
+
+        # Handle the end of the line
+        char_event = self.CharEvent(line_number, len(line_source_code), "\n", line_source_code)
+
+        token_event = self._handle_char_event(current_state, char_event, current_token)
+
+        if token_event == self.TokenEvent.END_TOKEN or token_event == self.TokenEvent.END_COMMENT:
+            tokens.append(current_token)
+
+        print(
+            f"Current state {current_state} char '{char_event.character}' token event {token_event}, line completely parsed"
+        )
+
+        return tokens
+
+    def parse(self, program_source_code):
+
+        tokens = []
+
+        lines = program_source_code.splitlines()
+
+        for (
+            line_number,
+            source_code,
+        ) in enumerate(lines, 1):
+            tokens.extend(
+                self._parse_line(
+                    line_number=line_number,
+                    line_source_code=source_code,
+                )
+            )
+
+        return tokens
 
 
-def parse_code(program_source_code):
-    tokens = []
-
-    lines = program_source_code.splitlines()
-
-    for line_number, source_code in enumerate(lines, 1):
-        tokens.extend(parse_line(line_number=line_number, source_code=source_code))
-
-    return tokens
-
-def print_pp(parsed_program):
+def print_pp(
+    parsed_program: list[ForthToken],
+):
     print("=============== Parsed program ===============")
     for token in parsed_program:
         print(token)
 
 
-def exec(parsed_program: list[Token]):
-
-    print("================== Execution =================")
-
-    ctx = Context()
-
-    for token in parsed_program:
-        match token.type:
-            case TokenType.NUMBER:
-                ctx.stack.append(token)
-
-            case TokenType.ADD:
-                v1 = ctx.stack.pop(-2)
-                v2 = ctx.stack.pop(-1)
-
-                ctx.stack.append(Token.create_execution(value=str(v1.value + v2.value)))
-
-            case TokenType.PRINT:
-                print(ctx.stack[-1].value)
-
-            case TokenType.PRINT_STACK:
-                for t in ctx.stack:
-                    print(t.value)
-
-            case TokenType.DUP:
-                v = ctx.stack[-1]
-                
-                ctx.stack.append(Token.create_execution(value=v))
-
-
-def main():
+# ============================================     MAIN     ==========================================
+def forth_main():
     with open(file="program.fs", mode="r") as program:
         source_code = program.read()
 
-    parsed_program = parse_code(source_code)
+    forthParser = ForthParser()
+
+    parsed_program = forthParser.parse(source_code)
     print_pp(parsed_program)
-    exec(parsed_program)
+    # exec(parsed_program)
 
 
 if __name__ == "__main__":
-    main()
+    forth_main()
